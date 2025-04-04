@@ -1,0 +1,10 @@
+requests
+pandas
+PyYAML
+google-generativeai # For LLM-only approach
+numpy
+scikit-learn # For metrics (accuracy, precision) and cosine_similarity
+faiss-cpu # Needed if RAG-only re-implements search locally
+transformers[torch] # Needed if RAG-only re-implements embedding locally
+torch
+sentence-transformers
