@@ -239,182 +239,148 @@ def save_index(index, file_path):
 def find_similar_code(user_code, k=5):
     """Find top K similar code files using cosine similarity."""
     print("Searching for similar code files...")
-    user_embedding = get_code_embeddings_batch([user_code])[0]  # Single embedding
-    user_embedding = user_embedding / np.linalg.norm(user_embedding)
-    distances, indices = index.search(np.array([user_embedding]), k)
-    matches = []
-    for i in range(k):
-        idx = indices[0][i]
-        if idx != -1 and idx < len(index_to_file):
-            ext, file_path = index_to_file[idx]  # Extract extension and file path
-            matches.append((file_path, float(distances[0][i]), ext))  # Include extension in the result
-    print(f"Found {len(matches)} similar code file(s).")
-    return matches
+    try:
+        print("Searching for similar code files...")
+
+        # Ensure user_code is not None or empty
+        if not user_code:
+            print("Error: user_code is None or empty")
+            return []
+        user_embedding = get_code_embeddings_batch([user_code])  
+        
+        if user_embedding is None or len(user_embedding) == 0:
+            print("Error: get_code_embeddings_batch returned None or empty list")
+            return []
+        user_embedding = user_embedding[0]  # Extract single embedding
+
+        user_embedding = user_embedding / np.linalg.norm(user_embedding)
+         # Ensure index is initialized
+        if index is None:
+            print("Error: index is None")
+            return []
+
+        # Perform search
+        distances, indices = index.search(np.array([user_embedding]), k)
+        matches = []
+        for i in range(k):
+            idx = indices[0][i]
+            if idx != -1 and idx < len(index_to_file):
+                ext, file_path = index_to_file[idx]  # Extract extension and file path
+                matches.append((file_path, float(distances[0][i]), ext))  # Include extension in the result
+        print(f"Found {len(matches)} similar code file(s).")
+        return matches
+    except Exception as e:
+        print(f"Error in find_similar_code: {str(e)}")
+        return []
 
 
-def check_plagiarism_with_gemini(user_code, similar_files=None):
-    """Check plagiarism with Gemini, enforcing 'yes' or 'no' with references."""
-    print("Checking plagiarism using Gemini API (Full System)...")
-    prompt = (
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+import google.generativeai as genai
+
+import csv
+
+app = FastAPI(title="Plagiarism Detection API", description="API for checking plagiarism using LLM and RAG approaches.")
+
+class CodeSnippet(BaseModel):
+    code: str
+    # similar_files: Optional[List[str]] = None
+    # threshold: Optional[float] = 0.9
+
+@app.post("/check_plagiarism_with_gemini/")
+def check_plagiarism_with_gemini(snippet: CodeSnippet):
+    """Full plagiarism check using Gemini API and retrieved similar files."""
+    try:
+        similar_files = find_similar_code(snippet.code, k=5)  # Retrieve similar files
+
+        prompt = (
             "You are a code plagiarism expert. Analyze the following user code snippet "
             "and determine if it is plagiarized. If similar code files are provided, "
             "compare them. Respond with exactly two words: 'yes' or 'no', followed by "
-            "references (file paths) if 'yes', separated by commas. Example: 'yes, file1, file2' or 'no'.\n\n"
-            "User code snippet:\n" + user_code + "\n\n"
-    )
-    if similar_files:
-        prompt += "Similar code files:\n"
-        for file_path, _, ext in similar_files[:3]:  # Unpack file_path, similarity, and extension
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    code = f.read()[:1000]  # Truncate for LLM limits
-                prompt += f"File: {file_path} (Extension: {ext})\nCode:\n{code}\n\n"  # Include extension in the prompt
-            except Exception as e:
-                print(f"Error reading {file_path}: {e}")
-    try:
+            "references (file paths) if 'yes', separated by commas.\n\n"
+            f"User code snippet:\n{snippet.code}\n\n"
+        )
+
+        if similar_files:
+            prompt += "Similar code files:\n"
+            for file_path, _, ext in similar_files[:3]:  
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        code = f.read()[:1000]  
+                    prompt += f"File: {file_path} (Extension: {ext})\nCode:\n{code}\n\n"
+                except Exception as e:
+                    print(f"Error reading {file_path}: {e}")
+
         gemini_model = genai.GenerativeModel("gemini-1.5-flash")
         response = gemini_model.generate_content(prompt)
         response_text = response.text.strip().lower() if response and hasattr(response, "text") else ""
-        print("Received response from Gemini API.")
+
+        parts = [p.strip() for p in response_text.split(",")]
+        is_plagiarized = parts[0] == "yes"
+        references = parts[1:] if is_plagiarized and len(parts) > 1 else []
+
+        return {"plagiarized": is_plagiarized, "references": references}
+
     except Exception as e:
-        print(f"Error calling Gemini API: {e}")
-        return False, []  # Default to non-plagiarized on error
+        raise HTTPException(status_code=500, detail=f"Error calling Gemini API: {str(e)}")
+    
+@app.post("/check_plagiarism_rag_only/")
+def check_plagiarism_rag_only(snippet: CodeSnippet, threshold: float = 0.9):
+    """RAG-only plagiarism check using cosine similarity."""
+    try:
+        matches = find_similar_code(snippet.code, k=5)
+        plagiarized_files = [file for file, similarity, _ in matches if similarity > threshold]
+        return {"plagiarized": bool(plagiarized_files), "references": plagiarized_files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    parts = [p.strip() for p in response_text.split(",")]
-    is_plagiarized = parts[0] == "yes"
-    references = parts[1:] if is_plagiarized and len(parts) > 1 else []
-    print(f"Gemini API determined plagiarism: {'yes' if is_plagiarized else 'no'}")
-    if references:
-        print(f"References from Gemini: {references}")
-    return is_plagiarized, references
-
-
-def check_plagiarism_rag_only(user_code, threshold=0.9):
-    """RAG-only plagiarism check with cosine similarity."""
-    print("Performing RAG-only plagiarism check...")
-    matches = find_similar_code(user_code, k=5)
-    plagiarized_files = [file for file, similarity, ext in matches if similarity > threshold]  # Unpack file_path, similarity, and extension
-    print(f"RAG-only check found {len(plagiarized_files)} file(s) above the threshold of {threshold}.")
-    return bool(plagiarized_files), plagiarized_files
-
-
-def check_plagiarism_llm_only(user_code):
-    """LLM-only plagiarism check."""
-    print("Performing LLM-only plagiarism check...")
+@app.post("/check_plagiarism_llm_only/")
+def check_plagiarism_llm_only(snippet: CodeSnippet):
+    """LLM-only plagiarism check using Gemini API."""
     prompt = (
-            "You are a code plagiarism expert. Determine if the following code snippet "
-            "is plagiarized. Respond with exactly two words: 'yes' or 'no'.\n\n"
-            "User code snippet:\n" + user_code + "\n\n"
+        "You are a code plagiarism expert. Determine if the following code snippet "
+        "is plagiarized. Respond with exactly two words: 'yes' or 'no'.\n\n"
+        f"User code snippet:\n{snippet.code}\n\n"
     )
     try:
         gemini_model = genai.GenerativeModel("gemini-1.5-flash")
         response = gemini_model.generate_content(prompt)
         response_text = response.text.strip().lower() if response and hasattr(response, "text") else ""
-        print("Received response from Gemini API for LLM-only check.")
+
+        is_plagiarized = response_text.startswith("yes")
+        return {"plagiarized": is_plagiarized}
+
     except Exception as e:
-        print(f"Error calling Gemini API: {e}")
-        return False, []  # Default to non-plagiarized on error
-
-    is_plagiarized = response_text.startswith("yes")
-    print(f"LLM-only check determined plagiarism: {'yes' if is_plagiarized else 'no'}")
-    return is_plagiarized, []
-
-
+        raise HTTPException(status_code=500, detail=f"Error calling Gemini API: {str(e)}")
+    
+@app.get("/evaluate_system/")
 def evaluate_system():
-    """Evaluate all three approaches and save to CSV."""
-    print("Starting evaluation of plagiarism detection system...")
+    """Evaluate plagiarism detection system and save results."""
     test_cases = [
         {"id": 1, "code": "def add(a, b): return a + b", "ground_truth": "no"},
         {"id": 2, "code": "if (operation == 5) { cout << \"Result is: \" << sqrt(num1); }", "ground_truth": "yes"},
         {"id": 3, "code": "print('Hello, World!')", "ground_truth": "no"},
         {"id": 4, "code": "for i in range(10): print(i)", "ground_truth": "yes"},
     ]
- 
+    
     results = []
     for test in test_cases:
-        print(f"Evaluating test case ID {test['id']}...")
-        user_code = test["code"]
-        # RAG only
-        rag_result, rag_files = check_plagiarism_rag_only(user_code)
-        results.append({
-            "approach": "RAG_only",
-            "snippet_id": test["id"],
-            "prediction": "yes" if rag_result else "no",
-            "ground_truth": test["ground_truth"],
-            "references": ",".join(rag_files)
-        })
-        print(f"Test case {test['id']} RAG_only result: {'yes' if rag_result else 'no'}")
-        # LLM only
-        llm_result, llm_files = check_plagiarism_llm_only(user_code)
-        results.append({
-            "approach": "LLM_only",
-            "snippet_id": test["id"],
-            "prediction": "yes" if llm_result else "no",
-            "ground_truth": test["ground_truth"],
-            "references": ",".join(llm_files)
-        })
-        print(f"Test case {test['id']} LLM_only result: {'yes' if llm_result else 'no'}")
-        # Full system
-        similar_files = find_similar_code(user_code)
-        full_result, full_files = check_plagiarism_with_gemini(user_code, similar_files)
-        results.append({
-            "approach": "full_system",
-            "snippet_id": test["id"],
-            "prediction": "yes" if full_result else "no",
-            "ground_truth": test["ground_truth"],
-            "references": ",".join(full_files)
-        })
-        print(f"Test case {test['id']} Full_system result: {'yes' if full_result else 'no'}")
-
-    output_csv = "evaluation_results.csv"
-    print(f"Saving evaluation results to {output_csv}...")
-    with open(output_csv, "w", newline="") as csvfile:
-        fieldnames = ["approach", "snippet_id", "prediction", "ground_truth", "references"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        rag_result = check_plagiarism_rag_only(CodeSnippet(code=test["code"])).get("plagiarized")
+        llm_result = check_plagiarism_llm_only(CodeSnippet(code=test["code"])).get("plagiarized")
+        full_result = check_plagiarism_with_gemini(CodeSnippet(code=test["code"]))
+        
+        results.append({"approach": "RAG_only", "snippet_id": test["id"], "prediction": rag_result, "ground_truth": test["ground_truth"]})
+        results.append({"approach": "LLM_only", "snippet_id": test["id"], "prediction": llm_result, "ground_truth": test["ground_truth"]})
+        results.append({"approach": "full_system", "snippet_id": test["id"], "prediction": full_result["plagiarized"], "ground_truth": test["ground_truth"]})
+    
+    with open("evaluation_results.csv", "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["approach", "snippet_id", "prediction", "ground_truth"])
         writer.writeheader()
         writer.writerows(results)
-    print("Evaluation results saved to evaluation_results.csv")
-
+    
+    return {"message": "Evaluation complete, results saved to evaluation_results.csv"}
 
 if __name__ == "__main__":
-    # Step 1: Obtain repositories
-    print("=== Step 1: Load repository links and clone repositories ===")
-    repo_list = load_repo_links("repositories.txt")
-    if not repo_list:
-        print("No repositories specified. Create repositories.txt with GitHub URLs. Exiting.")
-        exit(1)
-    clone_repos(repo_list)
-
-    # Step 2: Index code files
-    print("\n=== Step 2: Find code files and build index ===")
-    code_files = find_code_files("repositories")
-    if not code_files:
-        print("No code files found. Exiting.")
-        exit(1)
-    build_index(code_files)
-    save_index(index, "code_embeddings.index")
-    print("Vector database saved to code_embeddings.index")
-
-    # Step 3: Evaluate system
-    print("\n=== Step 3: Evaluate plagiarism detection system ===")
-    evaluate_system()
-
-    # Step 4: Test with sample code from first code file
-    print("\n=== Step 4: Test plagiarism check on a sample code file ===")
-    if code_files:
-        sample_file = code_files[0]
-        try:
-            with open(sample_file, "r", encoding="utf-8") as f:
-                user_code = f.read()
-            print(f"Checking plagiarism for code from: {sample_file}")
-            similar_files = find_similar_code(user_code)
-            is_plagiarized, references = check_plagiarism_with_gemini(user_code, similar_files)
-            print(f"Final plagiarism check result: {'Plagiarized' if is_plagiarized else 'Not plagiarized'}")
-            if references:
-                print("References provided by Gemini:")
-                for ref in references:
-                    print(f" - {ref}")
-        except Exception as e:
-            print(f"Error reading sample file {sample_file}: {e}")
-    else:
-        print("No sample code file available for testing.")
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
