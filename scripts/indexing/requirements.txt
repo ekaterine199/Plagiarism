@@ -1,7 +1,0 @@
-transformers[torch]
-faiss-cpu
-PyYAML
-torch # Explicitly add torch if needed by transformers
-sentence-transformers # Often used with transformers for easy pooling
-tensorflow
-tf-keras
