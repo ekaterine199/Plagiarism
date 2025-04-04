@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+transformers[torch]
+torch
+sentence-transformers # For easy pooling if needed
+PyYAML # To read config for model name
+tensorflow
+tf-keras

@@ -1,0 +1,75 @@
+version: '3.8' # You can keep or remove this line as the warning suggests
+
+services:
+  embedding-server:
+    build:
+      context: . # Use project root as context
+      dockerfile: ./app/embedding_server/Dockerfile # Path to Dockerfile from context
+    container_name: embedding-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    # ... rest of embedding-server config ...
+    networks:
+      - plagiarism_net
+
+  plagiarism-checker:
+    build:
+      context: . # Use project root as context
+      dockerfile: ./app/plagiarism_checker/Dockerfile # Path to Dockerfile from context
+    container_name: plagiarism-checker
+    ports:
+      - "8001:8001"
+    depends_on:
+      - embedding-server
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - faiss_data:/app/data
+    environment:
+      - EMBEDDING_SERVER_URL=http://embedding-server:8000/embed
+    env_file:
+      - .env
+    # ... rest of plagiarism-checker config ...
+    networks:
+      - plagiarism_net
+
+  indexing:
+    build:
+      context: . # Use project root as context
+      dockerfile: ./scripts/indexing/Dockerfile # Path to Dockerfile from context
+    container_name: indexing-script
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro # Mount config at runtime
+      - faiss_data:/app/data
+    # ... rest of indexing config ...
+    networks:
+      - plagiarism_net
+
+  evaluation:
+    build:
+      context: . # Use project root as context
+      dockerfile: ./scripts/evaluation/Dockerfile # Path to Dockerfile from context
+    container_name: evaluation-script
+    depends_on:
+      - plagiarism-checker
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro # Mount config at runtime
+      - ./scripts/evaluation/test_data.json:/app/test_data.json:ro
+      - faiss_data:/app/data
+    environment:
+      - CHECKER_API_URL=http://plagiarism-checker:8001/check_plagiarism
+      - EMBEDDING_SERVER_URL=http://embedding-server:8000/embed
+    env_file:
+      - .env
+    # ... rest of evaluation config ...
+    networks:
+      - plagiarism_net
+
+volumes:
+  faiss_data:
+    driver: local
+
+networks:
+  plagiarism_net:
+    driver: bridge

@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+requests
+faiss-cpu
+PyYAML
+google-generativeai # Gemini client
+numpy # For faiss search results handling

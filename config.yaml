@@ -1,0 +1,18 @@
+# config.yaml
+repositories:
+  - https://github.com/psf/requests.git # Example: moderately sized Python repo
+  - https://github.com/pallets/flask.git  # Example: another popular Python repo
+  # Add 1 more small repo if desired
+
+code_extensions: [".py"] # Focus on Python for simplicity in MVP
+embedding_model: "microsoft/codebert-base"
+faiss_index_path: "/app/data/faiss_index/code_index.faiss"
+faiss_metadata_path: "/app/data/faiss_index/code_metadata.json"
+repo_clone_dir: "/app/data/cloned_repos"
+top_k_similar: 3 # Number of similar files to retrieve for RAG
+max_context_length: 3500 # Approx token limit for context (adjust based on LLM)
+llm_model_name: "gemini-2.0-flash" # Or your preferred Gemini model
+
+# Evaluation settings
+evaluation_rag_threshold: 0.95 # Cosine similarity threshold for RAG-only approach
+evaluation_output_csv: "/app/data/evaluation_results.csv"
